@@ -1,6 +1,4 @@
 import streamlit as st
-import time
-import json
 import requests
 import pandas as pd
 import yfinance as yf
@@ -10,13 +8,17 @@ from transformers import pipeline
 st.set_page_config(page_title="News + TA Trading Bot", page_icon="📈", layout="wide")
 
 st.title("📈 News + Technical Analysis Bot")
-st.caption("News-driven signals confirmed by technical analysis | Crypto • Forex • Stocks • Energies")
+st.caption("Now more sensitive – detects smaller news too")
 
+# Sidebar
 st.sidebar.header("🔑 API Keys")
 TELEGRAM_BOT_TOKEN = st.sidebar.text_input("Telegram Bot Token", type="password")
 TELEGRAM_CHAT_ID = st.sidebar.text_input("Telegram Chat ID")
 NEWS_API_KEY = st.sidebar.text_input("NewsAPI Key", type="password")
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
+
+# More sensitive settings
+CONFIDENCE_THRESHOLD = 0.45   # Lower = detects smaller news
 
 WATCHLIST = {
     "AAPL": {"class": "stock", "keywords": ["Apple", "AAPL"]},
@@ -29,8 +31,6 @@ WATCHLIST = {
     "GC=F": {"class": "energy", "keywords": ["gold"]},
 }
 
-CONFIDENCE_THRESHOLD = 0.75
-
 @st.cache_resource
 def load_sentiment_model():
     return pipeline("sentiment-analysis", model="ProsusAI/finbert", truncation=True)
@@ -39,13 +39,16 @@ sentiment_pipeline = load_sentiment_model()
 
 def send_telegram(message: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        st.warning("Telegram keys missing")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
-    except:
-        pass
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code != 200:
+            st.error(f"Telegram error: {r.text}")
+    except Exception as e:
+        st.error(f"Telegram send failed: {e}")
 
 def get_news_sentiment(keywords):
     if not NEWS_API_KEY:
@@ -56,14 +59,15 @@ def get_news_sentiment(keywords):
         "q": query,
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 6,
+        "pageSize": 10,
         "apiKey": NEWS_API_KEY,
-        "from": (datetime.utcnow() - timedelta(hours=4)).isoformat()
+        "from": (datetime.utcnow() - timedelta(hours=12)).isoformat()
     }
     try:
         r = requests.get(url, params=params, timeout=12)
         articles = r.json().get("articles", [])
-    except:
+    except Exception as e:
+        st.warning(f"NewsAPI error: {e}")
         return None
 
     best = None
@@ -74,12 +78,15 @@ def get_news_sentiment(keywords):
         result = sentiment_pipeline(title[:512])[0]
         label = result["label"].lower()
         score = result["score"]
-        if label == "positive" and score >= CONFIDENCE_THRESHOLD:
+
+        if label in ["positive", "negative"] and score >= CONFIDENCE_THRESHOLD:
+            direction = "bullish" if label == "positive" else "bearish"
             if best is None or score > best["confidence"]:
-                best = {"direction": "bullish", "confidence": score, "headline": title}
-        elif label == "negative" and score >= CONFIDENCE_THRESHOLD:
-            if best is None or score > best["confidence"]:
-                best = {"direction": "bearish", "confidence": score, "headline": title}
+                best = {
+                    "direction": direction,
+                    "confidence": score,
+                    "headline": title
+                }
     return best
 
 def compute_rsi(series, period=14):
@@ -92,19 +99,20 @@ def compute_rsi(series, period=14):
 def get_technical_signal(symbol, direction):
     try:
         df = yf.download(symbol, period="5d", interval="1h", progress=False)
-        if df.empty or len(df) < 25:
-            return False, "Not enough data"
+        if df.empty or len(df) < 20:
+            return False, "Not enough price data"
         df["SMA20"] = df["Close"].rolling(20).mean()
         df["RSI"] = compute_rsi(df["Close"])
         latest = df.iloc[-1]
         price = float(latest["Close"])
         sma20 = float(latest["SMA20"])
         rsi = float(latest["RSI"])
+
         if direction == "bullish":
-            confirmed = price > sma20 and rsi < 70
+            confirmed = price > sma20 and rsi < 78
             reason = f"Price {price:.4f} > SMA20 | RSI {rsi:.1f}"
         else:
-            confirmed = price < sma20 and rsi > 30
+            confirmed = price < sma20 and rsi > 22
             reason = f"Price {price:.4f} < SMA20 | RSI {rsi:.1f}"
         return confirmed, reason
     except Exception as e:
@@ -114,53 +122,92 @@ if "positions" not in st.session_state:
     st.session_state.positions = {}
 if "signals" not in st.session_state:
     st.session_state.signals = []
+if "logs" not in st.session_state:
+    st.session_state.logs = []
 
-col1, col2 = st.columns([1, 3])
-with col1:
-    if st.button("🔄 Run Analysis Now", use_container_width=True):
-        with st.spinner("Scanning news + technicals..."):
-            for symbol, info in WATCHLIST.items():
-                news = get_news_sentiment(info["keywords"])
-                if not news:
-                    continue
-                direction = news["direction"]
-                conf = news["confidence"]
-                headline = news["headline"]
+if st.button("🔄 Run Analysis Now", use_container_width=True):
+    st.session_state.logs = []
+    with st.spinner("Scanning news + technicals (including smaller news)..."):
+        for symbol, info in WATCHLIST.items():
+            news = get_news_sentiment(info["keywords"])
+            
+            if not news:
+                st.session_state.logs.append(f"{symbol}: No relevant news found")
+                continue
 
-                if symbol in st.session_state.positions:
-                    open_pos = st.session_state.positions[symbol]
-                    if (open_pos["side"] == "long" and direction == "bearish") or (open_pos["side"] == "short" and direction == "bullish"):
-                        signal = {"type": "EXIT", "symbol": symbol, "side": open_pos["side"], "headline": headline, "confidence": conf, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
-                        st.session_state.signals.insert(0, signal)
-                        if send_telegram_alerts:
-                            send_telegram(f"🔴 EXIT {open_pos['side'].upper()} – {symbol}\n{headline}")
-                        del st.session_state.positions[symbol]
-                        continue
+            direction = news["direction"]
+            conf = news["confidence"]
+            headline = news["headline"]
+            
+            st.session_state.logs.append(f"{symbol}: {direction.upper()} news ({conf:.0%}) → {headline[:70]}...")
 
-                tech_ok, tech_reason = get_technical_signal(symbol, direction)
-                if tech_ok and symbol not in st.session_state.positions:
-                    side = "long" if direction == "bullish" else "short"
-                    st.session_state.positions[symbol] = {"side": side, "headline": headline, "confidence": conf, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
-                    signal = {"type": "ENTRY", "symbol": symbol, "side": side, "headline": headline, "confidence": conf, "tech": tech_reason, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
+            # Exit check
+            if symbol in st.session_state.positions:
+                open_pos = st.session_state.positions[symbol]
+                if (open_pos["side"] == "long" and direction == "bearish") or \
+                   (open_pos["side"] == "short" and direction == "bullish"):
+                    signal = {
+                        "type": "EXIT",
+                        "symbol": symbol,
+                        "side": open_pos["side"],
+                        "headline": headline,
+                        "confidence": conf,
+                        "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+                    }
                     st.session_state.signals.insert(0, signal)
                     if send_telegram_alerts:
-                        send_telegram(f"🟢 ENTRY {side.upper()} – {symbol}\n{headline}\n{tech_reason}")
-            st.success("Analysis complete!")
+                        send_telegram(f"🔴 EXIT {open_pos['side'].upper()} – {symbol}\n{headline}")
+                    del st.session_state.positions[symbol]
+                    st.session_state.logs.append(f"→ EXIT signal sent for {symbol}")
+                    continue
 
+            # Entry check
+            tech_ok, tech_reason = get_technical_signal(symbol, direction)
+            if tech_ok and symbol not in st.session_state.positions:
+                side = "long" if direction == "bullish" else "short"
+                st.session_state.positions[symbol] = {
+                    "side": side,
+                    "headline": headline,
+                    "confidence": conf,
+                    "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+                }
+                signal = {
+                    "type": "ENTRY",
+                    "symbol": symbol,
+                    "side": side,
+                    "headline": headline,
+                    "confidence": conf,
+                    "tech": tech_reason,
+                    "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+                }
+                st.session_state.signals.insert(0, signal)
+                if send_telegram_alerts:
+                    send_telegram(f"🟢 ENTRY {side.upper()} – {symbol}\n{headline}\n{tech_reason}")
+                st.session_state.logs.append(f"→ ENTRY signal sent for {symbol} ({tech_reason})")
+            else:
+                st.session_state.logs.append(f"→ News found but technicals rejected: {tech_reason}")
+
+    st.success("Analysis finished!")
+
+# Display
 st.subheader("📊 Current Open Positions")
 if st.session_state.positions:
     for sym, pos in st.session_state.positions.items():
-        st.info(f"**{sym}** | {pos['side'].upper()} | Conf: {pos['confidence']:.0%} | {pos['time']}\n\n{pos['headline']}")
+        st.info(f"**{sym}** | {pos['side'].upper()} | {pos['confidence']:.0%} | {pos['time']}\n\n{pos['headline']}")
 else:
     st.write("No open positions")
 
 st.subheader("📜 Recent Signals")
 if st.session_state.signals:
-    for sig in st.session_state.signals[:15]:
+    for sig in st.session_state.signals[:12]:
         color = "green" if sig["type"] == "ENTRY" else "red"
         st.markdown(f":{color}[**{sig['type']} {sig['side'].upper()} – {sig['symbol']}**]  \n{sig['headline']}  \nConfidence: {sig['confidence']:.0%} | {sig['time']}")
 else:
-    st.write("No signals yet. Click **Run Analysis Now**")
+    st.write("No signals yet")
 
-st.markdown("---")
-st.caption("Bot only triggers on strong news + technical confirmation")
+st.subheader("🔍 Analysis Log (Details)")
+if st.session_state.logs:
+    for log in st.session_state.logs:
+        st.text(log)
+else:
+    st.write("Click **Run Analysis Now** to see details")
