@@ -8,19 +8,35 @@ from transformers import pipeline
 st.set_page_config(page_title="News + TA Trading Bot", page_icon="📈", layout="wide")
 
 st.title("📈 News + Technical Analysis Bot")
-st.caption("News-driven signals + Technical confirmation")
 
 # ====================== READ KEYS FROM SECRETS ======================
 try:
     TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
     TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
-except:
-    st.error("Secrets not found. Please check your Streamlit Secrets.")
+    st.sidebar.success("Keys loaded from Secrets")
+except Exception as e:
+    st.error("Could not load Secrets. Please check Settings → Secrets")
     st.stop()
 # ===================================================================
 
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
+
+# Test Telegram button
+if st.sidebar.button("📨 Test Telegram Connection"):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": "✅ Test message from your News + TA Bot! Connection is working."
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200:
+            st.sidebar.success("Telegram test message sent successfully!")
+        else:
+            st.sidebar.error(f"Telegram error: {r.text}")
+    except Exception as e:
+        st.sidebar.error(f"Failed to send: {e}")
 
 CONFIDENCE_THRESHOLD = 0.45
 
@@ -50,9 +66,10 @@ def send_telegram(message: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, timeout=10)
+        return r.status_code == 200
     except:
-        pass
+        return False
 
 def get_news_sentiment(keywords):
     query = " OR ".join(keywords)
@@ -154,8 +171,8 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
                 signal = {"type": "ENTRY", "symbol": name, "side": side, "headline": headline, "confidence": conf, "tech": tech_reason, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
                 st.session_state.signals.insert(0, signal)
                 if send_telegram_alerts:
-                    send_telegram(f"🟢 ENTRY {side.upper()} – {name}\n{headline}\n{tech_reason}")
-                st.session_state.logs.append(f"→ ENTRY sent for {name}")
+                    ok = send_telegram(f"🟢 ENTRY {side.upper()} – {name}\n{headline}\n{tech_reason}")
+                    st.session_state.logs.append(f"→ ENTRY sent for {name}" + (" (Telegram OK)" if ok else " (Telegram failed)"))
             else:
                 st.session_state.logs.append(f"→ Technicals rejected for {name}: {tech_reason}")
 
