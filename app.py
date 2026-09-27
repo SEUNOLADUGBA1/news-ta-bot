@@ -8,31 +8,32 @@ from transformers import pipeline
 st.set_page_config(page_title="News + TA Trading Bot", page_icon="📈", layout="wide")
 
 st.title("📈 News + Technical Analysis Bot")
-st.caption("Detects news (including smaller ones) + Technical confirmation")
+st.caption("News-driven signals + Technical confirmation")
 
-# Sidebar
-st.sidebar.header("🔑 API Keys")
-TELEGRAM_BOT_TOKEN = st.sidebar.text_input("Telegram Bot Token", type="password")
-TELEGRAM_CHAT_ID = st.sidebar.text_input("Telegram Chat ID")
-NEWS_API_KEY = st.sidebar.text_input("NewsAPI Key", type="password")
+# ====================== READ KEYS FROM SECRETS ======================
+try:
+    TELEGRAM_BOT_TOKEN = st.secrets["TELEGRAM_BOT_TOKEN"]
+    TELEGRAM_CHAT_ID = st.secrets["TELEGRAM_CHAT_ID"]
+    NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
+except:
+    st.error("Secrets not found. Please check your Streamlit Secrets.")
+    st.stop()
+# ===================================================================
+
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
 
 CONFIDENCE_THRESHOLD = 0.45
 
-# Clearer & more active watchlist
 WATCHLIST = {
     "BTC-USD": {"name": "Bitcoin", "keywords": ["Bitcoin", "BTC"]},
     "ETH-USD": {"name": "Ethereum", "keywords": ["Ethereum", "ETH"]},
     "SOL-USD": {"name": "Solana", "keywords": ["Solana", "SOL"]},
-    
     "AAPL": {"name": "Apple", "keywords": ["Apple", "AAPL"]},
     "TSLA": {"name": "Tesla", "keywords": ["Tesla", "TSLA"]},
     "NVDA": {"name": "Nvidia", "keywords": ["Nvidia", "NVDA"]},
-    
     "EURUSD=X": {"name": "EUR/USD", "keywords": ["EURUSD", "euro dollar", "EUR/USD"]},
     "GBPUSD=X": {"name": "GBP/USD", "keywords": ["GBPUSD", "pound dollar", "GBP/USD"]},
     "USDJPY=X": {"name": "USD/JPY", "keywords": ["USDJPY", "dollar yen", "USD/JPY"]},
-    
     "GC=F": {"name": "Gold", "keywords": ["gold", "XAU", "GC"]},
     "SI=F": {"name": "Silver", "keywords": ["silver", "XAG", "SI"]},
     "CL=F": {"name": "Crude Oil", "keywords": ["oil", "crude", "WTI", "CL"]},
@@ -46,8 +47,6 @@ def load_sentiment_model():
 sentiment_pipeline = load_sentiment_model()
 
 def send_telegram(message: str):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
@@ -56,8 +55,6 @@ def send_telegram(message: str):
         pass
 
 def get_news_sentiment(keywords):
-    if not NEWS_API_KEY:
-        return None
     query = " OR ".join(keywords)
     url = "https://newsapi.org/v2/everything"
     params = {
@@ -125,7 +122,7 @@ if "logs" not in st.session_state:
 
 if st.button("🔄 Run Analysis Now", use_container_width=True):
     st.session_state.logs = []
-    with st.spinner("Scanning for news + technical confirmation..."):
+    with st.spinner("Scanning news + technicals..."):
         for symbol, info in WATCHLIST.items():
             name = info["name"]
             news = get_news_sentiment(info["keywords"])
@@ -139,7 +136,6 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
             headline = news["headline"]
             st.session_state.logs.append(f"{name}: {direction.upper()} ({conf:.0%}) → {headline[:65]}...")
 
-            # Exit
             if symbol in st.session_state.positions:
                 open_pos = st.session_state.positions[symbol]
                 if (open_pos["side"] == "long" and direction == "bearish") or (open_pos["side"] == "short" and direction == "bullish"):
@@ -151,7 +147,6 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
                     st.session_state.logs.append(f"→ EXIT sent for {name}")
                     continue
 
-            # Entry
             tech_ok, tech_reason = get_technical_signal(symbol, direction)
             if tech_ok and symbol not in st.session_state.positions:
                 side = "long" if direction == "bullish" else "short"
@@ -166,7 +161,6 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
 
     st.success("Analysis complete!")
 
-# Display
 st.subheader("📊 Current Open Positions")
 if st.session_state.positions:
     for sym, pos in st.session_state.positions.items():
