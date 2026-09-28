@@ -8,6 +8,7 @@ from transformers import pipeline
 st.set_page_config(page_title="News + TA Trading Bot", page_icon="📈", layout="wide")
 
 st.title("📈 News + Technical Analysis Bot")
+st.caption("More sensitive version – detects smaller news too")
 
 # ====================== READ KEYS FROM SECRETS ======================
 try:
@@ -22,23 +23,21 @@ except Exception as e:
 
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
 
-# Test Telegram button
+# Test Telegram
 if st.sidebar.button("📨 Test Telegram Connection"):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": "✅ Test message from your News + TA Bot! Connection is working."
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": "✅ Test message from your News + TA Bot!"}
     try:
         r = requests.post(url, json=payload, timeout=10)
         if r.status_code == 200:
-            st.sidebar.success("Telegram test message sent successfully!")
+            st.sidebar.success("Telegram test sent successfully!")
         else:
             st.sidebar.error(f"Telegram error: {r.text}")
     except Exception as e:
-        st.sidebar.error(f"Failed to send: {e}")
+        st.sidebar.error(f"Failed: {e}")
 
-CONFIDENCE_THRESHOLD = 0.45
+# More sensitive settings
+CONFIDENCE_THRESHOLD = 0.35
 
 WATCHLIST = {
     "BTC-USD": {"name": "Bitcoin", "keywords": ["Bitcoin", "BTC"]},
@@ -78,9 +77,9 @@ def get_news_sentiment(keywords):
         "q": query,
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 10,
+        "pageSize": 12,
         "apiKey": NEWS_API_KEY,
-        "from": (datetime.utcnow() - timedelta(hours=12)).isoformat()
+        "from": (datetime.utcnow() - timedelta(hours=24)).isoformat()
     }
     try:
         r = requests.get(url, params=params, timeout=12)
@@ -120,12 +119,13 @@ def get_technical_signal(symbol, direction):
         price = float(latest["Close"])
         sma20 = float(latest["SMA20"])
         rsi = float(latest["RSI"])
+
         if direction == "bullish":
-            confirmed = price > sma20 and rsi < 78
-            reason = f"Price {price:.4f} > SMA20 | RSI {rsi:.1f}"
+            confirmed = price > sma20 * 0.995 and rsi < 80   # slightly relaxed
+            reason = f"Price {price:.4f} vs SMA20 {sma20:.4f} | RSI {rsi:.1f}"
         else:
-            confirmed = price < sma20 and rsi > 22
-            reason = f"Price {price:.4f} < SMA20 | RSI {rsi:.1f}"
+            confirmed = price < sma20 * 1.005 and rsi > 20   # slightly relaxed
+            reason = f"Price {price:.4f} vs SMA20 {sma20:.4f} | RSI {rsi:.1f}"
         return confirmed, reason
     except Exception as e:
         return False, str(e)
@@ -139,7 +139,7 @@ if "logs" not in st.session_state:
 
 if st.button("🔄 Run Analysis Now", use_container_width=True):
     st.session_state.logs = []
-    with st.spinner("Scanning news + technicals..."):
+    with st.spinner("Scanning (more sensitive mode)..."):
         for symbol, info in WATCHLIST.items():
             name = info["name"]
             news = get_news_sentiment(info["keywords"])
@@ -151,8 +151,9 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
             direction = news["direction"]
             conf = news["confidence"]
             headline = news["headline"]
-            st.session_state.logs.append(f"{name}: {direction.upper()} ({conf:.0%}) → {headline[:65]}...")
+            st.session_state.logs.append(f"{name}: {direction.upper()} ({conf:.0%}) → {headline[:70]}...")
 
+            # Exit check
             if symbol in st.session_state.positions:
                 open_pos = st.session_state.positions[symbol]
                 if (open_pos["side"] == "long" and direction == "bearish") or (open_pos["side"] == "short" and direction == "bullish"):
@@ -164,6 +165,7 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
                     st.session_state.logs.append(f"→ EXIT sent for {name}")
                     continue
 
+            # Entry check
             tech_ok, tech_reason = get_technical_signal(symbol, direction)
             if tech_ok and symbol not in st.session_state.positions:
                 side = "long" if direction == "bullish" else "short"
@@ -174,7 +176,7 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
                     ok = send_telegram(f"🟢 ENTRY {side.upper()} – {name}\n{headline}\n{tech_reason}")
                     st.session_state.logs.append(f"→ ENTRY sent for {name}" + (" (Telegram OK)" if ok else " (Telegram failed)"))
             else:
-                st.session_state.logs.append(f"→ Technicals rejected for {name}: {tech_reason}")
+                st.session_state.logs.append(f"→ Technicals rejected: {tech_reason}")
 
     st.success("Analysis complete!")
 
