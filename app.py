@@ -8,7 +8,7 @@ from transformers import pipeline
 st.set_page_config(page_title="News + TA Trading Bot", page_icon="📈", layout="wide")
 
 st.title("📈 News + Technical Analysis Bot")
-st.caption("More sensitive version – detects smaller news too")
+st.caption("TESTING MODE – Very loose filters (for checking signals)")
 
 # ====================== READ KEYS FROM SECRETS ======================
 try:
@@ -17,13 +17,12 @@ try:
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
     st.sidebar.success("Keys loaded from Secrets")
 except Exception as e:
-    st.error("Could not load Secrets. Please check Settings → Secrets")
+    st.error("Could not load Secrets")
     st.stop()
 # ===================================================================
 
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
 
-# Test Telegram
 if st.sidebar.button("📨 Test Telegram Connection"):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": "✅ Test message from your News + TA Bot!"}
@@ -32,12 +31,12 @@ if st.sidebar.button("📨 Test Telegram Connection"):
         if r.status_code == 200:
             st.sidebar.success("Telegram test sent successfully!")
         else:
-            st.sidebar.error(f"Telegram error: {r.text}")
+            st.sidebar.error(f"Error: {r.text}")
     except Exception as e:
         st.sidebar.error(f"Failed: {e}")
 
-# More sensitive settings
-CONFIDENCE_THRESHOLD = 0.35
+# VERY LOOSE SETTINGS FOR TESTING
+CONFIDENCE_THRESHOLD = 0.25
 
 WATCHLIST = {
     "BTC-USD": {"name": "Bitcoin", "keywords": ["Bitcoin", "BTC"]},
@@ -46,13 +45,13 @@ WATCHLIST = {
     "AAPL": {"name": "Apple", "keywords": ["Apple", "AAPL"]},
     "TSLA": {"name": "Tesla", "keywords": ["Tesla", "TSLA"]},
     "NVDA": {"name": "Nvidia", "keywords": ["Nvidia", "NVDA"]},
-    "EURUSD=X": {"name": "EUR/USD", "keywords": ["EURUSD", "euro dollar", "EUR/USD"]},
-    "GBPUSD=X": {"name": "GBP/USD", "keywords": ["GBPUSD", "pound dollar", "GBP/USD"]},
-    "USDJPY=X": {"name": "USD/JPY", "keywords": ["USDJPY", "dollar yen", "USD/JPY"]},
-    "GC=F": {"name": "Gold", "keywords": ["gold", "XAU", "GC"]},
-    "SI=F": {"name": "Silver", "keywords": ["silver", "XAG", "SI"]},
-    "CL=F": {"name": "Crude Oil", "keywords": ["oil", "crude", "WTI", "CL"]},
-    "NG=F": {"name": "Natural Gas", "keywords": ["natural gas", "gas", "NG"]},
+    "EURUSD=X": {"name": "EUR/USD", "keywords": ["EURUSD", "euro", "EUR/USD"]},
+    "GBPUSD=X": {"name": "GBP/USD", "keywords": ["GBPUSD", "pound", "GBP/USD"]},
+    "USDJPY=X": {"name": "USD/JPY", "keywords": ["USDJPY", "yen", "USD/JPY"]},
+    "GC=F": {"name": "Gold", "keywords": ["gold", "XAU"]},
+    "SI=F": {"name": "Silver", "keywords": ["silver", "XAG"]},
+    "CL=F": {"name": "Crude Oil", "keywords": ["oil", "crude", "WTI"]},
+    "NG=F": {"name": "Natural Gas", "keywords": ["natural gas", "gas"]},
 }
 
 @st.cache_resource
@@ -77,9 +76,9 @@ def get_news_sentiment(keywords):
         "q": query,
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 12,
+        "pageSize": 15,
         "apiKey": NEWS_API_KEY,
-        "from": (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        "from": (datetime.utcnow() - timedelta(hours=36)).isoformat()
     }
     try:
         r = requests.get(url, params=params, timeout=12)
@@ -101,34 +100,16 @@ def get_news_sentiment(keywords):
                 best = {"direction": direction, "confidence": score, "headline": title}
     return best
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
 def get_technical_signal(symbol, direction):
+    # Very relaxed for testing – almost always returns True
     try:
-        df = yf.download(symbol, period="5d", interval="1h", progress=False)
-        if df.empty or len(df) < 20:
-            return False, "Not enough data"
-        df["SMA20"] = df["Close"].rolling(20).mean()
-        df["RSI"] = compute_rsi(df["Close"])
-        latest = df.iloc[-1]
-        price = float(latest["Close"])
-        sma20 = float(latest["SMA20"])
-        rsi = float(latest["RSI"])
-
-        if direction == "bullish":
-            confirmed = price > sma20 * 0.995 and rsi < 80   # slightly relaxed
-            reason = f"Price {price:.4f} vs SMA20 {sma20:.4f} | RSI {rsi:.1f}"
-        else:
-            confirmed = price < sma20 * 1.005 and rsi > 20   # slightly relaxed
-            reason = f"Price {price:.4f} vs SMA20 {sma20:.4f} | RSI {rsi:.1f}"
-        return confirmed, reason
-    except Exception as e:
-        return False, str(e)
+        df = yf.download(symbol, period="3d", interval="1h", progress=False)
+        if df.empty:
+            return True, "No data – forced pass (testing)"
+        price = float(df["Close"].iloc[-1])
+        return True, f"Price {price:.4f} (testing mode – technicals relaxed)"
+    except:
+        return True, "Technicals forced pass (testing)"
 
 if "positions" not in st.session_state:
     st.session_state.positions = {}
@@ -139,7 +120,7 @@ if "logs" not in st.session_state:
 
 if st.button("🔄 Run Analysis Now", use_container_width=True):
     st.session_state.logs = []
-    with st.spinner("Scanning (more sensitive mode)..."):
+    with st.spinner("Scanning in TESTING mode (very loose)..."):
         for symbol, info in WATCHLIST.items():
             name = info["name"]
             news = get_news_sentiment(info["keywords"])
@@ -153,32 +134,40 @@ if st.button("🔄 Run Analysis Now", use_container_width=True):
             headline = news["headline"]
             st.session_state.logs.append(f"{name}: {direction.upper()} ({conf:.0%}) → {headline[:70]}...")
 
-            # Exit check
+            # Skip if already in position
             if symbol in st.session_state.positions:
-                open_pos = st.session_state.positions[symbol]
-                if (open_pos["side"] == "long" and direction == "bearish") or (open_pos["side"] == "short" and direction == "bullish"):
-                    signal = {"type": "EXIT", "symbol": name, "side": open_pos["side"], "headline": headline, "confidence": conf, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
-                    st.session_state.signals.insert(0, signal)
-                    if send_telegram_alerts:
-                        send_telegram(f"🔴 EXIT {open_pos['side'].upper()} – {name}\n{headline}")
-                    del st.session_state.positions[symbol]
-                    st.session_state.logs.append(f"→ EXIT sent for {name}")
-                    continue
+                st.session_state.logs.append(f"{name}: Already in position – skipped")
+                continue
 
-            # Entry check
+            # Force entry in testing mode
+            side = "long" if direction == "bullish" else "short"
             tech_ok, tech_reason = get_technical_signal(symbol, direction)
-            if tech_ok and symbol not in st.session_state.positions:
-                side = "long" if direction == "bullish" else "short"
-                st.session_state.positions[symbol] = {"side": side, "name": name, "headline": headline, "confidence": conf, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
-                signal = {"type": "ENTRY", "symbol": name, "side": side, "headline": headline, "confidence": conf, "tech": tech_reason, "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
-                st.session_state.signals.insert(0, signal)
-                if send_telegram_alerts:
-                    ok = send_telegram(f"🟢 ENTRY {side.upper()} – {name}\n{headline}\n{tech_reason}")
-                    st.session_state.logs.append(f"→ ENTRY sent for {name}" + (" (Telegram OK)" if ok else " (Telegram failed)"))
-            else:
-                st.session_state.logs.append(f"→ Technicals rejected: {tech_reason}")
 
-    st.success("Analysis complete!")
+            st.session_state.positions[symbol] = {
+                "side": side,
+                "name": name,
+                "headline": headline,
+                "confidence": conf,
+                "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+            }
+            signal = {
+                "type": "ENTRY",
+                "symbol": name,
+                "side": side,
+                "headline": headline,
+                "confidence": conf,
+                "tech": tech_reason,
+                "time": datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+            }
+            st.session_state.signals.insert(0, signal)
+
+            if send_telegram_alerts:
+                ok = send_telegram(f"🟢 ENTRY {side.upper()} – {name}\n{headline}\n{tech_reason}")
+                st.session_state.logs.append(f"→ ENTRY sent for {name}" + (" (Telegram OK)" if ok else " (Telegram failed)"))
+            else:
+                st.session_state.logs.append(f"→ ENTRY created for {name} (Telegram off)")
+
+    st.success("Analysis complete (Testing Mode)!")
 
 st.subheader("📊 Current Open Positions")
 if st.session_state.positions:
@@ -189,7 +178,7 @@ else:
 
 st.subheader("📜 Recent Signals")
 if st.session_state.signals:
-    for sig in st.session_state.signals[:12]:
+    for sig in st.session_state.signals[:15]:
         color = "green" if sig["type"] == "ENTRY" else "red"
         st.markdown(f":{color}[**{sig['type']} {sig['side'].upper()} – {sig['symbol']}**]  \n{sig['headline']}  \nConfidence: {sig['confidence']:.0%} | {sig['time']}")
 else:
@@ -200,4 +189,4 @@ if st.session_state.logs:
     for log in st.session_state.logs:
         st.text(log)
 else:
-    st.write("Click **Run Analysis Now** to see details")
+    st.write("Click **Run Analysis Now**")
