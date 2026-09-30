@@ -4,11 +4,10 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from transformers import pipeline
-import time
 
 st.set_page_config(page_title="News + TA Bot Pro", page_icon="📈", layout="wide")
-st.title("📈 News + Technical Analysis Bot – Pro")
-st.caption("Auto-refresh every 1 minute | Smart Event Reminders")
+st.title("📈 News + Technical Analysis Bot – Flexible Version")
+st.caption("More flexible • Catches more news • Auto-refresh every 1 min")
 
 # ====================== SECRETS ======================
 try:
@@ -17,7 +16,7 @@ try:
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
     st.sidebar.success("Keys loaded")
 except:
-    st.error("Secrets missing – add them in Streamlit Settings")
+    st.error("Secrets missing")
     st.stop()
 
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
@@ -34,7 +33,8 @@ if st.sidebar.button("📨 Test Telegram"):
     except Exception as e:
         st.sidebar.error(str(e))
 
-CONFIDENCE_THRESHOLD = 0.68
+# More flexible settings
+CONFIDENCE_THRESHOLD = 0.52          # Lowered so it catches more news
 
 WATCHLIST = {
     "BTC-USD": {"name": "Bitcoin", "keywords": ["Bitcoin", "BTC"]},
@@ -53,9 +53,7 @@ WATCHLIST = {
     "NG=F": {"name": "Natural Gas", "keywords": ["natural gas", "gas price"]},
 }
 
-# High Impact Events (from your calendar)
 HIGH_IMPACT_EVENTS = [
-    {"date": "2026-09-30", "time": "02:30", "event": "Australia CPI", "impact": "High"},
     {"date": "2026-10-02", "time": "12:30", "event": "US NFP", "impact": "Very High"},
     {"date": "2026-10-02", "time": "10:00", "event": "EU Flash CPI", "impact": "High"},
     {"date": "2026-10-14", "time": "13:30", "event": "US CPI", "impact": "Very High"},
@@ -85,8 +83,8 @@ def send_telegram(msg):
 
 def get_structure(symbol):
     try:
-        df = yf.download(symbol, period="10d", interval="1h", progress=False)
-        if df.empty or len(df) < 40:
+        df = yf.download(symbol, period="8d", interval="1h", progress=False)
+        if df.empty or len(df) < 30:
             return None
         df = df.dropna()
         close = df["Close"]
@@ -97,8 +95,8 @@ def get_structure(symbol):
         sma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else sma20
         tr = pd.concat([high-low, (high-close.shift()).abs(), (low-close.shift()).abs()], axis=1).max(axis=1)
         atr = float(tr.rolling(14).mean().iloc[-1])
-        recent_high = float(high.tail(36).max())
-        recent_low = float(low.tail(36).min())
+        recent_high = float(high.tail(30).max())
+        recent_low = float(low.tail(30).min())
         delta = close.diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -117,19 +115,22 @@ def calc_sl_tp(structure, side):
     price = structure["price"]
     atr = structure["atr"]
     if side == "long":
-        sl = min(structure["recent_low"], price - 1.7 * atr)
-        tp = price + (price - sl) * 1.8
+        sl = min(structure["recent_low"], price - 1.6 * atr)
+        tp = price + (price - sl) * 1.7
     else:
-        sl = max(structure["recent_high"], price + 1.7 * atr)
-        tp = price - (sl - price) * 1.8
+        sl = max(structure["recent_high"], price + 1.6 * atr)
+        tp = price - (sl - price) * 1.7
     return sl, tp
 
 def get_clear_news(keywords):
     query = " OR ".join(keywords)
     params = {
-        "q": query, "language": "en", "sortBy": "publishedAt",
-        "pageSize": 8, "apiKey": NEWS_API_KEY,
-        "from": (datetime.utcnow() - timedelta(hours=16)).isoformat()
+        "q": query,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 12,
+        "apiKey": NEWS_API_KEY,
+        "from": (datetime.utcnow() - timedelta(hours=36)).isoformat()  # longer lookback
     }
     try:
         r = requests.get("https://newsapi.org/v2/everything", params=params, timeout=12)
@@ -140,7 +141,7 @@ def get_clear_news(keywords):
     best = None
     for art in articles:
         title = art.get("title") or ""
-        if len(title) < 22:
+        if len(title) < 18:
             continue
         res = sentiment_model(title[:500])[0]
         label = res["label"].lower()
@@ -159,17 +160,18 @@ def get_strong_technical(structure):
     sma50 = structure["sma50"]
     rsi = structure["rsi"]
 
-    if price > sma20 > sma50 and 52 < rsi < 72:
-        return {"direction": "bullish", "confidence": 0.78, "headline": "Strong bullish technical structure", "source": "technical"}
-    if price < sma20 < sma50 and 28 < rsi < 48:
-        return {"direction": "bearish", "confidence": 0.78, "headline": "Strong bearish technical structure", "source": "technical"}
-    # Extra gold sensitivity
-    if price < structure["recent_low"] * 1.003 and rsi < 42:
-        return {"direction": "bearish", "confidence": 0.82, "headline": "Breakdown – strong bearish momentum", "source": "technical"}
+    # More flexible technical rules
+    if price > sma20 and rsi > 50 and rsi < 75:
+        return {"direction": "bullish", "confidence": 0.70, "headline": "Bullish technical bias", "source": "technical"}
+    if price < sma20 and rsi < 50 and rsi > 25:
+        return {"direction": "bearish", "confidence": 0.70, "headline": "Bearish technical bias", "source": "technical"}
+    if price < structure["recent_low"] * 1.005 and rsi < 45:
+        return {"direction": "bearish", "confidence": 0.75, "headline": "Breakdown technical signal", "source": "technical"}
+    if price > structure["recent_high"] * 0.995 and rsi > 55:
+        return {"direction": "bullish", "confidence": 0.75, "headline": "Breakout technical signal", "source": "technical"}
     return None
 
 def get_event_reminders():
-    """Only return reminders when event is close (1 day / hours / minutes)"""
     now = datetime.utcnow()
     reminders = []
     for event in HIGH_IMPACT_EVENTS:
@@ -177,12 +179,12 @@ def get_event_reminders():
             event_dt = datetime.strptime(f"{event['date']} {event['time']}", "%Y-%m-%d %H:%M")
             diff_hours = (event_dt - now).total_seconds() / 3600
 
-            if 20 <= diff_hours <= 26:  # \~1 day before
-                reminders.append(f"📅 REMINDER (1 day): {event['event']} tomorrow at {event['time']} UTC – {event['impact']} impact")
-            elif 3 <= diff_hours <= 6:  # a few hours before
-                reminders.append(f"⚠️ COMING SOON ({diff_hours:.1f}h): {event['event']} – Prepare for volatility")
-            elif 0.25 <= diff_hours <= 1.5:  # minutes to 1.5 hours
-                reminders.append(f"🚨 IMMINENT ({int(diff_hours*60)} min): {event['event']} starting soon!")
+            if 20 <= diff_hours <= 28:
+                reminders.append(f"📅 1 DAY REMINDER: {event['event']} tomorrow ({event['impact']})")
+            elif 3 <= diff_hours <= 7:
+                reminders.append(f"⚠️ {diff_hours:.1f}h LEFT: {event['event']} – High volatility expected")
+            elif 0.2 <= diff_hours <= 1.5:
+                reminders.append(f"🚨 SOON ({int(diff_hours*60)} min): {event['event']} starting shortly!")
         except:
             continue
     return reminders
@@ -190,8 +192,6 @@ def get_event_reminders():
 # Session state
 if "positions" not in st.session_state:
     st.session_state.positions = {}
-if "signals" not in st.session_state:
-    st.session_state.signals = []
 if "logs" not in st.session_state:
     st.session_state.logs = []
 if "last_reminder_sent" not in st.session_state:
@@ -201,22 +201,18 @@ if "last_reminder_sent" not in st.session_state:
 if auto_refresh:
     st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-run_analysis = st.button("🔄 Run Analysis Now", use_container_width=True) or auto_refresh
-
-if run_analysis:
+if st.button("🔄 Run Analysis Now", use_container_width=True) or auto_refresh:
     st.session_state.logs = []
-    with st.spinner("Scanning markets + checking event reminders..."):
+    with st.spinner("Scanning with flexible settings..."):
 
-        # ===== EVENT REMINDERS (only when close) =====
-        reminders = get_event_reminders()
-        for rem in reminders:
+        # Event reminders
+        for rem in get_event_reminders():
             if rem not in st.session_state.last_reminder_sent:
                 st.session_state.logs.append(rem)
                 if send_telegram_alerts:
                     send_telegram(rem)
                 st.session_state.last_reminder_sent.add(rem)
 
-        # ===== MARKET SCAN =====
         for symbol, info in WATCHLIST.items():
             name = info["name"]
             news = get_clear_news(info["keywords"])
@@ -248,9 +244,9 @@ if run_analysis:
                 pos = st.session_state.positions[symbol]
                 if (pos["side"] == "long" and direction == "bearish") or (pos["side"] == "short" and direction == "bullish"):
                     if send_telegram_alerts:
-                        send_telegram(f"🔴 <b>EXIT {pos['side'].upper()}</b> – {name}\nPrice: {price_text}\n{headline}")
+                        send_telegram(f"🔴 EXIT {pos['side'].upper()} – {name}\nPrice: {price_text}\n{headline}")
                     del st.session_state.positions[symbol]
-                    st.session_state.logs.append(f"→ EXIT sent for {name}")
+                    st.session_state.logs.append(f"→ EXIT {name}")
                     continue
 
             # ENTRY
@@ -267,29 +263,29 @@ if run_analysis:
                 }
 
                 if send_telegram_alerts:
-                    msg = (f"🟢 <b>ENTRY {side.upper()}</b> – {name}\n"
+                    msg = (f"🟢 ENTRY {side.upper()} – {name}\n"
                            f"Entry: {price_text}\nSL: {sl_text}\nTP: {tp_text}\n"
                            f"Time: {entry_time}\nSource: {source.upper()}\n\n{headline}")
                     send_telegram(msg)
-                st.session_state.logs.append(f"→ ENTRY sent | {name} @ {price_text}")
+                st.session_state.logs.append(f"→ ENTRY {name} @ {price_text}")
 
-    st.success("Scan complete")
+    st.success("Flexible scan complete")
 
-# ====================== DISPLAY ======================
+# Display
 st.subheader("📊 Open Positions")
 if st.session_state.positions:
     for s, p in st.session_state.positions.items():
         st.success(f"**{p['name']}** | {p['side'].upper()}\n"
                    f"Entry: {p['entry_price']} | SL: {p['stop_loss']} | TP: {p['take_profit']}\n"
-                   f"Time: {p['time']}\n{p['headline']}")
+                   f"{p['headline']}")
 else:
     st.info("No open positions")
 
-st.subheader("📜 Recent Activity / Reminders")
+st.subheader("🔍 Recent Log")
 if st.session_state.logs:
-    for log in st.session_state.logs[-15:]:
+    for log in st.session_state.logs[-12:]:
         st.text(log)
 else:
-    st.write("Waiting for signals or upcoming event reminders...")
+    st.write("Waiting for signals...")
 
-st.caption("Auto-refresh is active (every 60 seconds). High-impact events only alert when they are approaching.")
+st.caption("Flexible mode active • Auto-refresh every 60 seconds")
