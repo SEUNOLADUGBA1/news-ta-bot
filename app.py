@@ -7,8 +7,8 @@ from transformers import pipeline
 import time
 
 st.set_page_config(page_title="News + TA Bot Pro", page_icon="📈", layout="wide")
-st.title("📈 News + TA Bot – Economic Data Sensitive")
-st.caption("High sensitivity to economic releases • Smart multi-stage reminders")
+st.title("📈 News + TA Bot – Economic Data + Jobs Reports")
+st.caption("US NFP + UK / EU / Australia Jobs • Multi-stage reminders")
 
 # ====================== SECRETS ======================
 try:
@@ -21,7 +21,7 @@ except:
     st.stop()
 
 send_telegram_alerts = st.sidebar.checkbox("Send Telegram Alerts", value=True)
-auto_refresh = st.sidebar.checkbox("Auto Refresh (every 60 sec)", value=True)
+auto_refresh = st.sidebar.checkbox("Auto Refresh (60 sec)", value=True)
 
 if st.sidebar.button("📨 Test Telegram"):
     try:
@@ -34,47 +34,82 @@ if st.sidebar.button("📨 Test Telegram"):
     except Exception as e:
         st.sidebar.error(str(e))
 
-# More sensitive for economic data
-CONFIDENCE_THRESHOLD = 0.48
+CONFIDENCE_THRESHOLD = 0.47
 
 WATCHLIST = {
     "BTC-USD": {"name": "Bitcoin", "keywords": ["Bitcoin", "BTC"]},
     "ETH-USD": {"name": "Ethereum", "keywords": ["Ethereum", "ETH"]},
-    "EURUSD=X": {"name": "EUR/USD", "keywords": ["EURUSD", "EUR/USD", "euro"]},
-    "GBPUSD=X": {"name": "GBP/USD", "keywords": ["GBPUSD", "GBP/USD", "pound"]},
-    "AUDUSD=X": {"name": "AUD/USD", "keywords": ["AUDUSD", "AUD/USD", "aussie"]},
-    "USDJPY=X": {"name": "USD/JPY", "keywords": ["USDJPY", "USD/JPY", "yen"]},
-    "GC=F": {"name": "Gold", "keywords": ["gold", "XAUUSD", "gold price"]},
+    "EURUSD=X": {"name": "EUR/USD", "keywords": ["EURUSD", "EUR/USD"]},
+    "GBPUSD=X": {"name": "GBP/USD", "keywords": ["GBPUSD", "GBP/USD"]},
+    "AUDUSD=X": {"name": "AUD/USD", "keywords": ["AUDUSD", "AUD/USD"]},
+    "USDJPY=X": {"name": "USD/JPY", "keywords": ["USDJPY", "USD/JPY"]},
+    "GC=F": {"name": "Gold", "keywords": ["gold", "XAUUSD"]},
     "SI=F": {"name": "Silver", "keywords": ["silver", "XAGUSD"]},
     "CL=F": {"name": "Crude Oil", "keywords": ["oil", "crude", "WTI"]},
-    "NG=F": {"name": "Natural Gas", "keywords": ["natural gas"]},
 }
 
-# Expanded High Impact Events (your list + previous)
+# ====================== HIGH IMPACT EVENTS ======================
+# Includes tomorrow's US NFP + UK / EU / Australia jobs reports
 HIGH_IMPACT_EVENTS = [
-    # October examples – add real dates as they are announced
-    {"date": "2026-10-01", "time": "14:00", "event": "ISM Manufacturing PMI", "impact": "High", "outcomes": "Higher than expected → USD bullish, Gold bearish | Lower → USD bearish, Gold bullish"},
-    {"date": "2026-10-02", "time": "12:30", "event": "US NFP", "impact": "Very High", "outcomes": "Strong jobs → USD up, Gold down | Weak jobs → USD down, Gold up"},
-    {"date": "2026-10-02", "time": "10:00", "event": "EU Flash CPI", "impact": "High", "outcomes": "Higher inflation → EUR bullish short-term"},
-    {"date": "2026-10-03", "time": "14:00", "event": "ISM Services PMI", "impact": "High", "outcomes": "Strong services → USD supportive"},
-    {"date": "2026-10-14", "time": "12:30", "event": "US CPI", "impact": "Very High", "outcomes": "Hot CPI → USD up + rate hike bets | Cool CPI → USD down + Gold up"},
-    {"date": "2026-10-15", "time": "12:30", "event": "US PPI", "impact": "High", "outcomes": "Similar to CPI direction"},
-    {"date": "2026-10-28", "time": "18:00", "event": "FOMC Decision + Press Conference", "impact": "Very High", "outcomes": "Hawkish → USD up | Dovish → USD down + Gold up"},
-    {"date": "2026-10-29", "time": "13:15", "event": "ECB Decision", "impact": "Very High", "outcomes": "Hawkish ECB → EUR up"},
-    {"date": "2026-11-05", "time": "12:00", "event": "BoE Decision", "impact": "High", "outcomes": "Hawkish → GBP up"},
-    {"date": "2026-11-06", "time": "12:30", "event": "US NFP", "impact": "Very High", "outcomes": "Strong/Weak jobs reaction"},
-    # Generic recurring style events (bot will match by name in news)
+    # Tomorrow's US NFP (adjust exact time if needed)
+    {
+        "date": "2026-10-02",
+        "time": "12:30",
+        "event": "US Non-Farm Payrolls (NFP)",
+        "impact": "Very High",
+        "outcomes": "Strong NFP → USD bullish, Gold bearish | Weak NFP → USD bearish, Gold bullish"
+    },
+    # Other major jobs reports
+    {
+        "date": "2026-10-15",
+        "time": "06:00",
+        "event": "UK Unemployment Rate / Employment Change",
+        "impact": "High",
+        "outcomes": "Lower unemployment → GBP bullish | Higher unemployment → GBP bearish"
+    },
+    {
+        "date": "2026-10-16",
+        "time": "09:00",
+        "event": "Eurozone Unemployment Rate",
+        "impact": "High",
+        "outcomes": "Lower unemployment → EUR supportive | Higher → EUR weaker"
+    },
+    {
+        "date": "2026-10-16",
+        "time": "01:30",
+        "event": "Australia Employment Change / Unemployment Rate",
+        "impact": "High",
+        "outcomes": "Strong jobs → AUD bullish | Weak jobs → AUD bearish"
+    },
+    # Other important events kept
+    {
+        "date": "2026-10-03",
+        "time": "14:00",
+        "event": "ISM Services PMI",
+        "impact": "High",
+        "outcomes": "Strong services → USD supportive"
+    },
+    {
+        "date": "2026-10-14",
+        "time": "12:30",
+        "event": "US CPI",
+        "impact": "Very High",
+        "outcomes": "Hot CPI → USD up | Cool CPI → USD down + Gold up"
+    },
+    {
+        "date": "2026-10-28",
+        "time": "18:00",
+        "event": "FOMC Decision + Press Conference",
+        "impact": "Very High",
+        "outcomes": "Hawkish → USD up | Dovish → USD down + Gold up"
+    },
 ]
 
-# Extra economic keywords for higher sensitivity
 ECONOMIC_KEYWORDS = [
-    "ISM Manufacturing", "ISM Services", "PMI", "NFP", "Nonfarm", "CPI", "PPI",
-    "Core PCE", "PCE Price Index", "GDP", "Retail Sales", "Unemployment",
-    "Jobless Claims", "Michigan Consumer", "Consumer Confidence", "FOMC",
-    "Fed Minutes", "Fed Rate", "Interest Rate Decision", "ECB", "BoE", "RBA",
-    "Building Permits", "Housing Starts", "Existing Home Sales",
-    "Personal Income", "Personal Spending", "Inflation Rate", "Flash CPI",
-    "NAB Business Confidence", "Westpac Consumer", "Deposit Facility Rate"
+    "NFP", "Nonfarm", "Non-Farm", "Payrolls", "Unemployment", "Employment Change",
+    "ISM", "PMI", "CPI", "PPI", "Core PCE", "GDP", "Retail Sales",
+    "Jobless Claims", "FOMC", "Fed Minutes", "Interest Rate", "ECB", "BoE", "RBA",
+    "Consumer Confidence", "Michigan", "Building Permits", "Housing Starts"
 ]
 
 @st.cache_resource
@@ -132,23 +167,22 @@ def calc_sl_tp(structure, side):
     return sl, tp
 
 def get_economic_news():
-    """Higher sensitivity scan for economic data headlines"""
-    query = " OR ".join(ECONOMIC_KEYWORDS[:12])  # keep query reasonable
+    query = " OR ".join(["NFP", "Nonfarm", "Payrolls", "Unemployment", "Employment", "ISM", "CPI"])
     params = {
         "q": query,
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 15,
+        "pageSize": 12,
         "apiKey": NEWS_API_KEY,
-        "from": (datetime.utcnow() - timedelta(hours=8)).isoformat()
+        "from": (datetime.utcnow() - timedelta(hours=10)).isoformat()
     }
     try:
         r = requests.get("https://newsapi.org/v2/everything", params=params, timeout=10)
         articles = r.json().get("articles", [])
     except:
-        return []
+        return None
 
-    results = []
+    best = None
     for art in articles:
         title = art.get("title") or ""
         if len(title) < 15:
@@ -158,16 +192,9 @@ def get_economic_news():
         score = res["score"]
         if label in ["positive", "negative"] and score >= CONFIDENCE_THRESHOLD:
             direction = "bullish" if label == "positive" else "bearish"
-            results.append({
-                "direction": direction,
-                "confidence": score,
-                "headline": title,
-                "source": "economic_news"
-            })
-    # return the strongest one
-    if results:
-        return max(results, key=lambda x: x["confidence"])
-    return None
+            if best is None or score > best["confidence"]:
+                best = {"direction": direction, "confidence": score, "headline": title, "source": "economic"}
+    return best
 
 def get_strong_technical(structure):
     if not structure:
@@ -176,13 +203,12 @@ def get_strong_technical(structure):
     sma20 = structure["sma20"]
     rsi = structure["rsi"]
     if price > sma20 and 48 < rsi < 72:
-        return {"direction": "bullish", "confidence": 0.68, "headline": "Bullish technical", "source": "technical"}
+        return {"direction": "bullish", "confidence": 0.67, "headline": "Bullish technical", "source": "technical"}
     if price < sma20 and 28 < rsi < 52:
-        return {"direction": "bearish", "confidence": 0.68, "headline": "Bearish technical", "source": "technical"}
+        return {"direction": "bearish", "confidence": 0.67, "headline": "Bearish technical", "source": "technical"}
     return None
 
 def get_smart_reminders():
-    """Multi-stage reminders as requested"""
     now = datetime.utcnow()
     reminders = []
     for event in HIGH_IMPACT_EVENTS:
@@ -191,34 +217,33 @@ def get_smart_reminders():
             diff_sec = (event_dt - now).total_seconds()
             diff_hours = diff_sec / 3600
             diff_min = diff_sec / 60
-
             name = event["event"]
             impact = event.get("impact", "High")
             outcomes = event.get("outcomes", "")
 
-            # 1 day before – with possible outcomes
-            if 20 <= diff_hours <= 28:
-                reminders.append(f"📅 1 DAY BEFORE: {name} ({impact})\nPossible outcomes: {outcomes}")
+            # 1 day before – full message with possible outcomes
+            if 18 <= diff_hours <= 30:
+                reminders.append(f"📅 1 DAY BEFORE: {name} ({impact})\nPossible outcomes:\n{outcomes}")
 
-            # Later stages – short headlines only
-            elif 11.5 <= diff_hours <= 12.5:
-                reminders.append(f"12h: {name} coming")
+            # Later stages – short only
+            elif 11 <= diff_hours <= 13:
+                reminders.append(f"12h → {name}")
             elif 5.5 <= diff_hours <= 6.5:
-                reminders.append(f"6h: {name}")
-            elif 2.5 <= diff_hours <= 3.5:
-                reminders.append(f"3h: {name}")
-            elif 1.5 <= diff_hours <= 2.5:
-                reminders.append(f"2h: {name}")
+                reminders.append(f"6h → {name}")
+            elif 2.7 <= diff_hours <= 3.3:
+                reminders.append(f"3h → {name}")
+            elif 1.7 <= diff_hours <= 2.3:
+                reminders.append(f"2h → {name}")
             elif 0.8 <= diff_hours <= 1.2:
-                reminders.append(f"1h: {name}")
-            elif 25 <= diff_min <= 35:
-                reminders.append(f"30 min: {name}")
-            elif 8 <= diff_min <= 12:
-                reminders.append(f"10 min: {name}")
-            elif 4 <= diff_min <= 6:
-                reminders.append(f"5 min: {name}")
-            elif 0.5 <= diff_min <= 1.5:
-                reminders.append(f"1 min: {name} almost live!")
+                reminders.append(f"1h → {name}")
+            elif 25 <= diff_min <= 40:
+                reminders.append(f"30 min → {name}")
+            elif 8 <= diff_min <= 15:
+                reminders.append(f"10 min → {name}")
+            elif 4 <= diff_min <= 7:
+                reminders.append(f"5 min → {name}")
+            elif 0.3 <= diff_min <= 2:
+                reminders.append(f"1 min → {name} almost live!")
         except:
             continue
     return reminders
@@ -231,32 +256,29 @@ if "logs" not in st.session_state:
 if "sent_reminders" not in st.session_state:
     st.session_state.sent_reminders = set()
 
-# Auto-refresh every 60 seconds (separate from scan speed)
 if auto_refresh:
     st.markdown('<meta http-equiv="refresh" content="60">', unsafe_allow_html=True)
 
-run = st.button("🔄 Run Fast Scan", use_container_width=True) or auto_refresh
+run = st.button("🔄 Run Scan", use_container_width=True) or auto_refresh
 
 if run:
     st.session_state.logs = []
-    start = time.time()
-    with st.spinner("Fast economic + technical scan..."):
+    with st.spinner("Scanning + checking NFP & jobs reminders..."):
 
-        # 1. Smart reminders
+        # Reminders
         for rem in get_smart_reminders():
-            key = rem[:40]
+            key = rem[:50]
             if key not in st.session_state.sent_reminders:
                 st.session_state.logs.append(rem)
                 if send_telegram_alerts:
                     send_telegram(rem)
                 st.session_state.sent_reminders.add(key)
 
-        # 2. Economic news (high priority)
+        # Economic news (NFP etc.)
         econ = get_economic_news()
         if econ:
-            st.session_state.logs.append(f"ECONOMIC: {econ['direction'].upper()} ({econ['confidence']:.0%}) → {econ['headline'][:70]}")
+            st.session_state.logs.append(f"NEWS: {econ['direction'].upper()} ({econ['confidence']:.0%}) → {econ['headline'][:75]}")
 
-        # 3. Normal market scan
         for symbol, info in WATCHLIST.items():
             name = info["name"]
             structure = get_structure(symbol)
@@ -268,12 +290,10 @@ if run:
             direction = signal["direction"]
             conf = signal["confidence"]
             headline = signal["headline"]
-            source = signal.get("source", "news")
             price = structure["price"]
             price_text = f"${price:,.2f}"
-            entry_time = datetime.utcnow().strftime("%H:%M UTC")
 
-            st.session_state.logs.append(f"{name}: {direction.upper()} ({conf:.0%}) {source} @ {price_text}")
+            st.session_state.logs.append(f"{name}: {direction.upper()} ({conf:.0%}) @ {price_text}")
 
             # EXIT
             if symbol in st.session_state.positions:
@@ -293,28 +313,23 @@ if run:
 
                 st.session_state.positions[symbol] = {
                     "side": side, "name": name, "entry_price": price_text,
-                    "stop_loss": sl_text, "take_profit": tp_text,
-                    "time": entry_time, "headline": headline
+                    "stop_loss": sl_text, "take_profit": tp_text, "headline": headline
                 }
                 if send_telegram_alerts:
-                    msg = (f"🟢 ENTRY {side.upper()} – {name}\n"
-                           f"Entry: {price_text}\nSL: {sl_text}\nTP: {tp_text}\n"
-                           f"{headline}")
-                    send_telegram(msg)
+                    send_telegram(f"🟢 ENTRY {side.upper()} – {name}\nEntry: {price_text}\nSL: {sl_text}\nTP: {tp_text}\n{headline}")
 
-    elapsed = time.time() - start
-    st.success(f"Scan finished in {elapsed:.1f}s")
+    st.success("Scan complete")
 
 # Display
 st.subheader("📊 Open Positions")
 if st.session_state.positions:
     for s, p in st.session_state.positions.items():
-        st.success(f"**{p['name']}** {p['side'].upper()} | Entry {p['entry_price']} | SL {p['stop_loss']} | TP {p['take_profit']}\n{p['headline']}")
+        st.success(f"**{p['name']}** {p['side'].upper()} | {p['entry_price']} | SL {p['stop_loss']} | TP {p['take_profit']}\n{p['headline']}")
 else:
     st.info("No open positions")
 
-st.subheader("🔍 Activity Log")
-for log in st.session_state.logs[-15:]:
+st.subheader("🔍 Log / Reminders")
+for log in st.session_state.logs[-12:]:
     st.text(log)
 
-st.caption("Economic data sensitive mode • Reminders escalate from 1 day → 1 minute • Auto-refresh 60s")
+st.caption("US NFP + UK / EU / Australia jobs reports included • Reminders from 1 day → 1 minute")
