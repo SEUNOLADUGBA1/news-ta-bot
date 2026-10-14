@@ -6,7 +6,7 @@ from transformers import pipeline
 
 st.set_page_config(page_title="News + TA Bot", page_icon="📈", layout="wide")
 st.title("📈 News + Technical Analysis Bot")
-st.caption("Works even with limited data")
+st.caption("Entry + SL + TP + Confidence Level")
 
 # ====================== SECRETS ======================
 try:
@@ -59,51 +59,80 @@ def send_telegram(msg):
     except:
         return False
 
-def get_price_and_simple_ta(symbol):
-    """Get price + simple direction even with limited data"""
+def get_price_data(symbol):
     try:
-        # Try full data first
         df = yf.download(symbol, period="5d", interval="1h", progress=False)
-        if not df.empty and len(df) >= 20:
+        if not df.empty and len(df) >= 15:
             df = df.dropna()
             close = df["Close"]
+            high = df["High"]
+            low = df["Low"]
             price = float(close.iloc[-1])
-            sma20 = float(close.rolling(20).mean().iloc[-1])
+            sma20 = float(close.rolling(min(20, len(close))).mean().iloc[-1])
+            
+            tr = (high - low).rolling(14).mean()
+            atr = float(tr.iloc[-1]) if not tr.empty else price * 0.008
+            
             change = ((price - float(close.iloc[0])) / float(close.iloc[0])) * 100
-
-            if price > sma20 and change > 0.3:
+            
+            # Direction + Confidence for technical
+            if price > sma20 * 1.002 and change > 0.5:
                 direction = "bullish"
-            elif price < sma20 and change < -0.3:
+                confidence = 0.78
+            elif price < sma20 * 0.998 and change < -0.5:
                 direction = "bearish"
+                confidence = 0.78
+            elif price > sma20:
+                direction = "bullish"
+                confidence = 0.62
+            elif price < sma20:
+                direction = "bearish"
+                confidence = 0.62
             else:
                 direction = "neutral"
-
-            reason = f"Price {price:.2f} | SMA20 {sma20:.2f} | Change {change:.2f}%"
-            return price, direction, reason
+                confidence = 0.50
+                
+            reason = f"Price {price:.2f} | SMA {sma20:.2f} | Change {change:.2f}%"
+            return price, direction, reason, atr, confidence
     except:
         pass
 
-    # Fallback – last price only
+    # Fallback
     try:
         ticker = yf.Ticker(symbol)
         price = float(ticker.fast_info["lastPrice"])
-        # Very simple fallback direction using previous close if available
+        atr = price * 0.01
         try:
             prev = float(ticker.fast_info["previousClose"])
             change = ((price - prev) / prev) * 100
             if change > 0.4:
                 direction = "bullish"
+                confidence = 0.65
             elif change < -0.4:
                 direction = "bearish"
+                confidence = 0.65
             else:
                 direction = "neutral"
-            reason = f"Price {price:.2f} | vs Prev Close {change:.2f}%"
+                confidence = 0.50
+            reason = f"Price {price:.2f} | Change {change:.2f}%"
         except:
             direction = "neutral"
+            confidence = 0.50
             reason = f"Price {price:.2f} (limited data)"
-        return price, direction, reason
+        return price, direction, reason, atr, confidence
     except Exception as e:
-        return None, "error", str(e)
+        return None, "error", str(e), None, 0
+
+def calculate_sl_tp(price, direction, atr):
+    if price is None or atr is None:
+        return None, None
+    if direction == "bullish":
+        sl = price - (1.5 * atr)
+        tp = price + (2.2 * atr)
+    else:
+        sl = price + (1.5 * atr)
+        tp = price - (2.2 * atr)
+    return sl, tp
 
 def get_news(keywords):
     query = " OR ".join(keywords)
@@ -130,7 +159,7 @@ def get_news(keywords):
             result = sentiment_model(title[:400])[0]
             label = result["label"].lower()
             score = result["score"]
-            if label in ["positive", "negative"] and score >= 0.50:  # more sensitive
+            if label in ["positive", "negative"] and score >= 0.50:
                 direction = "bullish" if label == "positive" else "bearish"
                 if best is None or score > best["confidence"]:
                     best = {"direction": direction, "confidence": score, "headline": title}
@@ -152,49 +181,60 @@ if st.button("🔄 Run Analysis", use_container_width=True):
             name = info["name"]
             st.session_state.logs.append(f"——— {name} ———")
 
-            price, ta_direction, ta_reason = get_price_and_simple_ta(symbol)
+            price, ta_direction, ta_reason, atr, ta_conf = get_price_data(symbol)
 
             if price is None:
                 st.session_state.logs.append(f"ERROR: {ta_reason}")
                 continue
 
             st.session_state.logs.append(f"Technical: {ta_reason}")
-            st.session_state.logs.append(f"TA Direction: {ta_direction.upper()}")
+            st.session_state.logs.append(f"TA Direction: {ta_direction.upper()} ({ta_conf:.0%})")
 
             news = get_news(info["keywords"])
 
             if news:
                 final_direction = news["direction"]
+                confidence = news["confidence"]
                 source = "News + Technical"
                 headline = news["headline"]
-                conf = f"{news['confidence']:.0%}"
-                st.session_state.logs.append(f"News: {final_direction.upper()} ({conf})")
+                st.session_state.logs.append(f"News: {final_direction.upper()} ({confidence:.0%})")
                 st.session_state.logs.append(f"Headline: {headline[:65]}...")
             else:
                 final_direction = ta_direction
+                confidence = ta_conf
                 source = "Technical only"
                 headline = "No strong news found"
                 st.session_state.logs.append("News: None")
 
             if final_direction in ["bullish", "bearish"]:
+                sl, tp = calculate_sl_tp(price, final_direction, atr)
                 price_text = f"${price:,.2f}"
+                sl_text = f"${sl:,.2f}" if sl else "N/A"
+                tp_text = f"${tp:,.2f}" if tp else "N/A"
+
                 signal = {
                     "name": name,
                     "direction": final_direction,
                     "price": price_text,
+                    "sl": sl_text,
+                    "tp": tp_text,
+                    "confidence": confidence,
                     "ta": ta_reason,
                     "headline": headline,
                     "source": source,
                     "time": datetime.utcnow().strftime("%H:%M UTC")
                 }
                 st.session_state.signals.append(signal)
-                st.session_state.logs.append(f"✅ SIGNAL: {final_direction.upper()}")
+                st.session_state.logs.append(f"✅ ENTRY {final_direction.upper()} | Conf {confidence:.0%} | SL {sl_text} | TP {tp_text}")
 
                 if send_telegram_alerts:
                     emoji = "🟢" if final_direction == "bullish" else "🔴"
                     msg = (
-                        f"{emoji} <b>{final_direction.upper()}</b> – {name}\n\n"
-                        f"Price: {price_text}\n"
+                        f"{emoji} <b>ENTRY {final_direction.upper()}</b> – {name}\n\n"
+                        f"Entry: {price_text}\n"
+                        f"Stop Loss: {sl_text}\n"
+                        f"Take Profit: {tp_text}\n"
+                        f"Confidence: {confidence:.0%}\n"
                         f"Technical: {ta_reason}\n"
                         f"Source: {source}\n"
                         f"Time: {signal['time']}\n\n"
@@ -203,25 +243,28 @@ if st.button("🔄 Run Analysis", use_container_width=True):
                     ok = send_telegram(msg)
                     st.session_state.logs.append("Telegram: Sent" if ok else "Telegram: Failed")
             else:
-                st.session_state.logs.append("Result: Neutral – no signal")
+                st.session_state.logs.append("Result: Neutral – no entry")
 
     st.success("Analysis complete")
 
-# Display
-st.subheader("📊 Market Directions")
+# ====================== DISPLAY ======================
+st.subheader("📊 Entry Signals (with SL, TP & Confidence)")
 if st.session_state.signals:
     for s in st.session_state.signals:
         color = "green" if s["direction"] == "bullish" else "red"
         st.markdown(
-            f":{color}[**{s['direction'].upper()} – {s['name']}**]\n\n"
-            f"Price: {s['price']}\n"
-            f"Technical: {s['ta']}\n"
-            f"Source: {s['source']}\n"
-            f"Time: {s['time']}\n"
+            f":{color}[**ENTRY {s['direction'].upper()} – {s['name']}**]\n\n"
+            f"**Entry:** {s['price']}\n"
+            f"**Stop Loss:** {s['sl']}\n"
+            f"**Take Profit:** {s['tp']}\n"
+            f"**Confidence:** {s['confidence']:.0%}\n"
+            f"**Technical:** {s['ta']}\n"
+            f"**Source:** {s['source']}\n"
+            f"**Time:** {s['time']}\n"
             f"{s['headline']}"
         )
 else:
-    st.info("No clear Bullish or Bearish signals at the moment.")
+    st.info("No clear Entry signals at the moment.")
 
 st.subheader("🔍 Log")
 for line in st.session_state.logs:
