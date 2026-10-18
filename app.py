@@ -6,7 +6,7 @@ from transformers import pipeline
 
 st.set_page_config(page_title="News + TA Bot", page_icon="📈", layout="wide")
 st.title("📈 News + Technical Analysis Bot")
-st.caption("Stricter News + Improved Entry / SL / TP")
+st.caption("1:3 RR • Clear sourced estimates")
 
 # ====================== SECRETS ======================
 try:
@@ -32,46 +32,14 @@ if st.sidebar.button("📨 Test Telegram"):
         st.sidebar.error(str(e))
 
 WATCHLIST = {
-    "GC=F": {
-        "name": "Gold",
-        "keywords": ["gold price", "XAUUSD", "gold rises", "gold falls", "bullion"],
-        "must_contain": ["gold", "xau", "bullion"]
-    },
-    "SI=F": {
-        "name": "Silver",
-        "keywords": ["silver price", "XAGUSD", "silver rises", "silver falls"],
-        "must_contain": ["silver", "xag"]
-    },
-    "CL=F": {
-        "name": "Crude Oil",
-        "keywords": ["crude oil", "WTI", "oil price", "Brent"],
-        "must_contain": ["oil", "wti", "brent", "crude"]
-    },
-    "BTC-USD": {
-        "name": "Bitcoin",
-        "keywords": ["Bitcoin", "BTC price", "Bitcoin rises", "Bitcoin falls"],
-        "must_contain": ["bitcoin", "btc"]
-    },
-    "EURUSD=X": {
-        "name": "EUR/USD",
-        "keywords": ["EURUSD", "EUR/USD", "euro dollar"],
-        "must_contain": ["eur", "euro"]
-    },
-    "GBPUSD=X": {
-        "name": "GBP/USD",
-        "keywords": ["GBPUSD", "GBP/USD", "pound dollar"],
-        "must_contain": ["gbp", "pound", "sterling"]
-    },
-    "AUDUSD=X": {
-        "name": "AUD/USD",
-        "keywords": ["AUDUSD", "AUD/USD", "aussie"],
-        "must_contain": ["aud", "aussie", "australia"]
-    },
-    "USDJPY=X": {
-        "name": "USD/JPY",
-        "keywords": ["USDJPY", "USD/JPY", "yen"],
-        "must_contain": ["jpy", "yen", "japan"]
-    },
+    "GC=F": {"name": "Gold", "keywords": ["gold price", "XAUUSD", "gold"], "must_contain": ["gold", "xau", "bullion"]},
+    "SI=F": {"name": "Silver", "keywords": ["silver price", "XAGUSD", "silver"], "must_contain": ["silver", "xag"]},
+    "CL=F": {"name": "Crude Oil", "keywords": ["crude oil", "WTI", "oil price"], "must_contain": ["oil", "wti", "brent", "crude"]},
+    "BTC-USD": {"name": "Bitcoin", "keywords": ["Bitcoin", "BTC price"], "must_contain": ["bitcoin", "btc"]},
+    "EURUSD=X": {"name": "EUR/USD", "keywords": ["EURUSD", "EUR/USD"], "must_contain": ["eur", "euro"]},
+    "GBPUSD=X": {"name": "GBP/USD", "keywords": ["GBPUSD", "GBP/USD"], "must_contain": ["gbp", "pound"]},
+    "AUDUSD=X": {"name": "AUD/USD", "keywords": ["AUDUSD", "AUD/USD"], "must_contain": ["aud", "aussie"]},
+    "USDJPY=X": {"name": "USD/JPY", "keywords": ["USDJPY", "USD/JPY"], "must_contain": ["jpy", "yen"]},
 }
 
 @st.cache_resource
@@ -94,29 +62,37 @@ def send_telegram(msg):
 def get_price_data(symbol):
     try:
         df = yf.download(symbol, period="5d", interval="1h", progress=False)
-        if not df.empty and len(df) >= 15:
+        if not df.empty and len(df) >= 20:
             df = df.dropna()
             close = df["Close"]
             high = df["High"]
             low = df["Low"]
+
             price = float(close.iloc[-1])
-            sma20 = float(close.rolling(min(20, len(close))).mean().iloc[-1])
+            sma20 = float(close.rolling(20).mean().iloc[-1])
             atr = float((high - low).rolling(14).mean().iloc[-1])
             change = ((price - float(close.iloc[0])) / float(close.iloc[0])) * 100
+
+            # Technical estimate from last 12 candles
+            recent = df.tail(12)
+            up_candles = (recent["Close"] > recent["Open"]).sum()
+            total = len(recent)
+            buyers_pct = int((up_candles / total) * 100)
+            sellers_pct = 100 - buyers_pct
 
             if price > sma20 * 1.001 and change > 0.3:
                 direction, confidence = "bullish", 0.75
             elif price < sma20 * 0.999 and change < -0.3:
                 direction, confidence = "bearish", 0.75
             elif price > sma20:
-                direction, confidence = "bullish", 0.60
+                direction, confidence = "bullish", 0.62
             elif price < sma20:
-                direction, confidence = "bearish", 0.60
+                direction, confidence = "bearish", 0.62
             else:
                 direction, confidence = "neutral", 0.50
 
             reason = f"Price {price:.2f} | SMA {sma20:.2f} | Chg {change:.2f}%"
-            return price, direction, reason, atr, confidence
+            return price, direction, reason, atr, confidence, buyers_pct, sellers_pct
     except:
         pass
 
@@ -124,7 +100,7 @@ def get_price_data(symbol):
     try:
         ticker = yf.Ticker(symbol)
         price = float(ticker.fast_info["lastPrice"])
-        atr = price * 0.012
+        atr = price * 0.01
         try:
             prev = float(ticker.fast_info["previousClose"])
             change = ((price - prev) / prev) * 100
@@ -138,29 +114,26 @@ def get_price_data(symbol):
         except:
             direction, confidence = "neutral", 0.50
             reason = f"Price {price:.2f}"
-        return price, direction, reason, atr, confidence
+        buyers_pct = 55 if direction == "bullish" else 45 if direction == "bearish" else 50
+        sellers_pct = 100 - buyers_pct
+        return price, direction, reason, atr, confidence, buyers_pct, sellers_pct
     except Exception as e:
-        return None, "error", str(e), None, 0
+        return None, "error", str(e), None, 0, 50, 50
 
 def calculate_sl_tp(price, direction, atr):
-    """Improved SL/TP with cleaner risk-reward"""
-    if price is None or atr is None or atr == 0:
-        # fallback percentage
-        if direction == "bullish":
-            return price * 0.985, price * 1.025
-        else:
-            return price * 1.015, price * 0.975
-
+    """Minimum 1:3 Risk Reward"""
+    if price is None:
+        return None, None
+    risk = atr * 1.1 if atr and atr > 0 else price * 0.008
     if direction == "bullish":
-        sl = price - (1.4 * atr)
-        tp = price + (2.1 * atr)
-    else:  # bearish
-        sl = price + (1.4 * atr)
-        tp = price - (2.1 * atr)
+        sl = price - risk
+        tp = price + (risk * 3)
+    else:
+        sl = price + risk
+        tp = price - (risk * 3)
     return sl, tp
 
 def is_relevant(title, must_contain):
-    """Stricter relevance check"""
     title_lower = title.lower()
     return any(word in title_lower for word in must_contain)
 
@@ -170,7 +143,7 @@ def get_news(info):
         "q": query,
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 10,
+        "pageSize": 8,
         "apiKey": NEWS_API_KEY,
         "from": (datetime.utcnow() - timedelta(hours=24)).isoformat()
     }
@@ -183,12 +156,8 @@ def get_news(info):
     best = None
     for art in articles:
         title = art.get("title") or ""
-        if len(title) < 15:
+        if len(title) < 15 or not is_relevant(title, info["must_contain"]):
             continue
-        # Stricter filter
-        if not is_relevant(title, info["must_contain"]):
-            continue
-
         try:
             result = sentiment_model(title[:400])[0]
             label = result["label"].lower()
@@ -210,18 +179,19 @@ if st.button("🔄 Run Analysis", use_container_width=True):
     st.session_state.logs = []
     st.session_state.signals = []
 
-    with st.spinner("Running stricter analysis..."):
+    with st.spinner("Analyzing..."):
         for symbol, info in WATCHLIST.items():
             name = info["name"]
             st.session_state.logs.append(f"——— {name} ———")
 
-            price, ta_direction, ta_reason, atr, ta_conf = get_price_data(symbol)
+            price, ta_direction, ta_reason, atr, ta_conf, buyers, sellers = get_price_data(symbol)
             if price is None:
                 st.session_state.logs.append(f"ERROR: {ta_reason}")
                 continue
 
             st.session_state.logs.append(f"Technical: {ta_reason}")
             st.session_state.logs.append(f"TA: {ta_direction.upper()} ({ta_conf:.0%})")
+            st.session_state.logs.append(f"Buyers/Sellers: {buyers}% / {sellers}% (Technical estimate – last 12 candles)")
 
             news = get_news(info)
 
@@ -231,7 +201,7 @@ if st.button("🔄 Run Analysis", use_container_width=True):
                 source = "News + Technical"
                 headline = news["headline"]
                 st.session_state.logs.append(f"News: {final_direction.upper()} ({confidence:.0%})")
-                st.session_state.logs.append(f"Headline: {headline[:70]}...")
+                st.session_state.logs.append(f"Headline: {headline[:65]}...")
             else:
                 final_direction = ta_direction
                 confidence = ta_conf
@@ -245,10 +215,9 @@ if st.button("🔄 Run Analysis", use_container_width=True):
                 sl_text = f"${sl:,.2f}"
                 tp_text = f"${tp:,.2f}"
 
-                # Risk-Reward check
                 risk = abs(price - sl)
                 reward = abs(tp - price)
-                rr = reward / risk if risk > 0 else 0
+                rr = reward / risk if risk > 0 else 3.0
 
                 signal = {
                     "name": name,
@@ -258,6 +227,8 @@ if st.button("🔄 Run Analysis", use_container_width=True):
                     "tp": tp_text,
                     "confidence": confidence,
                     "ta": ta_reason,
+                    "buyers": buyers,
+                    "sellers": sellers,
                     "headline": headline,
                     "source": source,
                     "rr": rr,
@@ -276,8 +247,10 @@ if st.button("🔄 Run Analysis", use_container_width=True):
                         f"Entry: {price_text}\n"
                         f"Stop Loss: {sl_text}\n"
                         f"Take Profit: {tp_text}\n"
-                        f"Risk:Reward ≈ 1:{rr:.1f}\n"
+                        f"Risk:Reward = 1:{rr:.1f}\n"
                         f"Confidence: {confidence:.0%}\n"
+                        f"Buyers/Sellers: {buyers}% / {sellers}%\n"
+                        f"(Technical estimate – last 12 candles)\n"
                         f"Technical: {ta_reason}\n"
                         f"Source: {source}\n"
                         f"Time: {signal['time']}\n\n"
@@ -302,6 +275,8 @@ if st.session_state.signals:
             f"**Take Profit:** {s['tp']}\n"
             f"**Risk:Reward:** 1:{s['rr']:.1f}\n"
             f"**Confidence:** {s['confidence']:.0%}\n"
+            f"**Buyers/Sellers:** {s['buyers']}% / {s['sellers']}%\n"
+            f"*Technical estimate (last 12 candles)*\n"
             f"**Technical:** {s['ta']}\n"
             f"**Source:** {s['source']}\n"
             f"**Time:** {s['time']}\n"
